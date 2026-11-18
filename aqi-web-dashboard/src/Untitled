@@ -1,0 +1,315 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  Wind,
+  Droplets,
+  Thermometer,
+  Gauge,
+  AlertTriangle,
+  Power,
+  Activity,
+  Radio,
+  Flame,
+} from 'lucide-react';
+
+const API_BASE = 'http://127.0.0.1:8000';
+const POLL_INTERVAL_MS = 3000;
+
+// ------------------------------------------------------------------
+// AQI classification helper
+// ------------------------------------------------------------------
+function getAqiStatus(aqi) {
+  if (aqi <= 50) {
+    return { label: 'Good', color: 'bg-emerald-500', text: 'text-emerald-400', ring: 'ring-emerald-500/30' };
+  }
+  if (aqi <= 100) {
+    return { label: 'Moderate', color: 'bg-yellow-500', text: 'text-yellow-400', ring: 'ring-yellow-500/30' };
+  }
+  if (aqi <= 150) {
+    return { label: 'Unhealthy (Sensitive)', color: 'bg-orange-500', text: 'text-orange-400', ring: 'ring-orange-500/30' };
+  }
+  return { label: 'Unhealthy', color: 'bg-red-500', text: 'text-red-400', ring: 'ring-red-500/30' };
+}
+
+// ------------------------------------------------------------------
+// Reusable Metric Card
+// ------------------------------------------------------------------
+function MetricCard({ icon: Icon, label, value, unit, target, accent }) {
+  return (
+    <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg hover:shadow-xl hover:border-slate-600 transition-all duration-300">
+      <div className="flex items-center justify-between mb-3">
+        <div className={`p-2.5 rounded-xl ${accent.bg}`}>
+          <Icon className={`w-5 h-5 ${accent.icon}`} />
+        </div>
+        <span className="text-xs text-slate-500 font-medium">{target}</span>
+      </div>
+      <p className="text-slate-400 text-sm font-medium">{label}</p>
+      <div className="flex items-baseline gap-1 mt-1">
+        <span className="text-2xl font-bold text-white">{value}</span>
+        <span className="text-sm text-slate-400">{unit}</span>
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
+// Relay Toggle Control
+// ------------------------------------------------------------------
+function RelayControl({ label, icon: Icon, isOn, onToggle, pending }) {
+  return (
+    <div className="flex items-center justify-between bg-slate-800 border border-slate-700 rounded-2xl p-5 hover:border-slate-600 transition-all duration-300">
+      <div className="flex items-center gap-3">
+        <div className={`p-2.5 rounded-xl ${isOn ? 'bg-cyan-500/10' : 'bg-slate-700/50'}`}>
+          <Icon className={`w-5 h-5 ${isOn ? 'text-cyan-400' : 'text-slate-500'}`} />
+        </div>
+        <div>
+          <p className="text-white font-semibold">{label}</p>
+          <span
+            className={`inline-block mt-1 px-2 py-0.5 rounded-full text-xs font-bold tracking-wide ${
+              isOn ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+            }`}
+          >
+            {isOn ? 'RUNNING' : 'STOPPED'}
+          </span>
+        </div>
+      </div>
+
+      <button
+        onClick={onToggle}
+        disabled={pending}
+        className={`relative inline-flex h-7 w-14 items-center rounded-full transition-colors duration-300 disabled:opacity-50 ${
+          isOn ? 'bg-cyan-500' : 'bg-slate-600'
+        }`}
+      >
+        <span
+          className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition-transform duration-300 ${
+            isOn ? 'translate-x-8' : 'translate-x-1'
+          }`}
+        />
+      </button>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
+// Main App
+// ------------------------------------------------------------------
+export default function App() {
+  const [liveData, setLiveData] = useState(null);
+  const [connected, setConnected] = useState(false);
+  const [relayPending, setRelayPending] = useState({ purifier: false, dehumidifier: false });
+  const [gasLoading, setGasLoading] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(null);
+
+  // ----------------------------------------------------------------
+  // Polling fetch
+  // ----------------------------------------------------------------
+  const fetchLiveData = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/live-data`);
+      if (!res.ok) throw new Error('Bad response');
+      const data = await res.json();
+      setLiveData(data);
+      setConnected(true);
+      setLastUpdated(new Date());
+    } catch (err) {
+      setConnected(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchLiveData();
+    const interval = setInterval(fetchLiveData, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [fetchLiveData]);
+
+  // ----------------------------------------------------------------
+  // Relay control handler
+  // ----------------------------------------------------------------
+  const handleToggleRelay = async (device) => {
+    if (!liveData) return;
+    const currentStatus = device === 'purifier' ? liveData.purifier_status : liveData.dehumidifier_status;
+
+    setRelayPending((prev) => ({ ...prev, [device]: true }));
+    try {
+      const res = await fetch(`${API_BASE}/api/control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device, status: !currentStatus }),
+      });
+      if (res.ok) {
+        await fetchLiveData();
+      }
+    } catch (err) {
+      setConnected(false);
+    } finally {
+      setRelayPending((prev) => ({ ...prev, [device]: false }));
+    }
+  };
+
+  // ----------------------------------------------------------------
+  // Simulate gas leak handler
+  // ----------------------------------------------------------------
+  const handleTriggerGas = async () => {
+    setGasLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/trigger-gas`, { method: 'POST' });
+      if (res.ok) {
+        await fetchLiveData();
+      }
+    } catch (err) {
+      setConnected(false);
+    } finally {
+      setGasLoading(false);
+    }
+  };
+
+  const aqi = liveData?.aqi ?? 0;
+  const aqiStatus = getAqiStatus(aqi);
+  const methaneActive = liveData?.methane_gas ?? false;
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-white font-sans">
+      {/* ============================ HEADER ============================ */}
+      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-sm sticky top-0 z-10">
+        <div className="max-w-7xl mx-auto px-6 py-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h1 className="text-xl md:text-2xl font-bold text-white flex items-center gap-2">
+              <Wind className="w-6 h-6 text-cyan-400" />
+              Automated Air Quality & Hazardous Gas Monitoring System
+            </h1>
+            <p className="text-slate-400 text-sm mt-1">
+              Real-time purification control & methane leak detection dashboard
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold border ${
+                connected
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                  : 'bg-red-500/10 text-red-400 border-red-500/30'
+              }`}
+            >
+              <Radio className="w-3.5 h-3.5" />
+              {connected ? 'Live REST Active' : 'Disconnected'}
+              <span
+                className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`}
+              />
+            </div>
+
+            <button
+              onClick={handleTriggerGas}
+              disabled={gasLoading}
+              className="flex items-center gap-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors duration-200 shadow-lg shadow-red-900/30"
+            >
+              <Flame className="w-4 h-4" />
+              {gasLoading ? 'Triggering...' : 'Simulate Gas Leak'}
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+        {/* ====================== METHANE ALERT BANNER ====================== */}
+        {methaneActive && (
+          <div className="flex items-center gap-3 bg-red-500/10 border border-red-500/40 text-red-400 rounded-2xl px-5 py-4 animate-pulse">
+            <AlertTriangle className="w-6 h-6 flex-shrink-0" />
+            <div>
+              <p className="font-bold">HAZARDOUS METHANE GAS DETECTED</p>
+              <p className="text-sm text-red-300">Emergency ventilation and alarm systems engaged.</p>
+            </div>
+          </div>
+        )}
+
+        {/* ====================== AQI PROMINENT CARD ====================== */}
+        <div className={`bg-slate-800 border border-slate-700 rounded-3xl p-8 shadow-xl ring-1 ${aqiStatus.ring}`}>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+            <div className="flex items-center gap-5">
+              <div className={`p-4 rounded-2xl ${aqiStatus.color}/10`}>
+                <Gauge className={`w-10 h-10 ${aqiStatus.text}`} />
+              </div>
+              <div>
+                <p className="text-slate-400 text-sm font-medium">Air Quality Index (AQI)</p>
+                <p className="text-5xl font-extrabold text-white mt-1">{aqi}</p>
+              </div>
+            </div>
+
+            <div className="flex flex-col items-start md:items-end gap-2">
+              <span className={`px-4 py-1.5 rounded-full text-sm font-bold text-white ${aqiStatus.color}`}>
+                {aqiStatus.label}
+              </span>
+              <span className="text-xs text-slate-500">
+                {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : 'Awaiting data...'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* ====================== METRIC CARDS GRID ====================== */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+          <MetricCard
+            icon={Wind}
+            label="PM2.5"
+            value={liveData?.pm25 ?? '--'}
+            unit="µg/m³"
+            target="Target: < 35"
+            accent={{ bg: 'bg-purple-500/10', icon: 'text-purple-400' }}
+          />
+          <MetricCard
+            icon={Wind}
+            label="PM10"
+            value={liveData?.pm10 ?? '--'}
+            unit="µg/m³"
+            target="Target: < 50"
+            accent={{ bg: 'bg-indigo-500/10', icon: 'text-indigo-400' }}
+          />
+          <MetricCard
+            icon={Thermometer}
+            label="Temperature"
+            value={liveData?.temperature ?? '--'}
+            unit="°C"
+            target="Max: 30°C"
+            accent={{ bg: 'bg-orange-500/10', icon: 'text-orange-400' }}
+          />
+          <MetricCard
+            icon={Droplets}
+            label="Humidity"
+            value={liveData?.humidity ?? '--'}
+            unit="%"
+            target="Max: 60%"
+            accent={{ bg: 'bg-sky-500/10', icon: 'text-sky-400' }}
+          />
+        </div>
+
+        {/* ====================== HARDWARE RELAY CONTROL ====================== */}
+        <section>
+          <div className="flex items-center gap-2 mb-4">
+            <Activity className="w-5 h-5 text-cyan-400" />
+            <h2 className="text-lg font-bold text-white">Hardware Relay Control</h2>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <RelayControl
+              label="Air Purifier"
+              icon={Power}
+              isOn={liveData?.purifier_status ?? false}
+              onToggle={() => handleToggleRelay('purifier')}
+              pending={relayPending.purifier}
+            />
+            <RelayControl
+              label="Dehumidifier"
+              icon={Power}
+              isOn={liveData?.dehumidifier_status ?? false}
+              onToggle={() => handleToggleRelay('dehumidifier')}
+              pending={relayPending.dehumidifier}
+            />
+          </div>
+        </section>
+      </main>
+
+      <footer className="border-t border-slate-800 py-6 text-center text-slate-600 text-xs">
+        Final Year Project — Automated Air Quality Purification & Hazardous Gas Monitoring System
+      </footer>
+    </div>
+  );
+}
